@@ -1,1 +1,747 @@
 # Prompt 1 of this project
+"""
+api/utils/rag_utils.py
+RAG pipeline: document ingestion into ChromaDB + per-page retrieval + testcase generation.
+
+This module is self-contained. It initialises its own Azure OpenAI client and
+ChromaDB collection so it does not depend on the streamlit backend.py.
+"""
+from __future__ import annotations
+
+import base64
+import io
+import json
+import os
+import re
+import time
+import uuid
+from collections import Counter
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
+from threading import Lock
+from typing import Dict, List, Optional, Tuple
+
+import chromadb
+import fitz  # PyMuPDF
+import httpx
+from dotenv import load_dotenv
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from openai import AzureOpenAI
+from PIL import Image
+
+load_dotenv()
+
+# ── Config ────────────────────────────────────────────────────────────────────
+_AZURE_API_KEY      = os.getenv("AZURE_API_KEY", "")
+_AZURE_API_ENDPOINT = os.getenv("AZURE_API_ENDPOINT", "")
+_AZURE_API_VERSION  = os.getenv("AZURE_API_VERSION", "2024-12-01-preview")
+_CHAT_MODEL         = os.getenv("AZURE_CHAT_MODEL", os.getenv("AZURE_MODEL_NAME", "gpt-4.1-mini"))
+_EMBEDDING_MODEL    = os.getenv("AZURE_EMBEDDING_MODEL", "text-embedding-ada-002")
+_RAG_CHROMA_DIR     = os.getenv("RAG_CHROMA_DIR", "./rag_knowledge_base")
+
+# Chunking
+CHUNK_SIZE    = 800
+CHUNK_OVERLAP = 150
+
+# Per-page RAG
+PAGE_RAG_TOP_K    = 5
+MAX_CONTEXT_CHARS = 12_000  # chars of RAG context per page prompt
+
+# Image processing
+IMAGE_OCR_MAX_WORKERS = 6
+MAX_IMAGE_RATIO       = 100   # max width:height before resize
+
+Path(_RAG_CHROMA_DIR).mkdir(parents=True, exist_ok=True)
+
+_print_lock = Lock()
+
+# ── Azure client ──────────────────────────────────────────────────────────────
+_az = AzureOpenAI(
+    azure_endpoint=_AZURE_API_ENDPOINT,
+    api_version=_AZURE_API_VERSION,
+    api_key=_AZURE_API_KEY,
+    http_client=httpx.Client(verify=False),
+)
+
+# ── ChromaDB ──────────────────────────────────────────────────────────────────
+_chroma     = chromadb.PersistentClient(path=_RAG_CHROMA_DIR)
+_collection = _chroma.get_or_create_collection(
+    name="rag_knowledge_base",
+    metadata={"hnsw:space": "cosine"},
+)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# INGEST HELPERS
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _clean_text_for_ingest(text: str) -> str:
+    text = text.replace("\x00", "").replace("\r\n", "\n").replace("\r", "\n")
+    lines = [l for l in text.split("\n") if not re.fullmatch(r"\s*\d+\s*", l)]
+    text  = "\n".join(lines)
+    text  = re.sub(r"\n{3,}", "\n\n", text)
+    return re.sub(r" {2,}", " ", text).strip()
+
+
+def _hybrid_chunk(text: str, source: str, page: int) -> List[Dict]:
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=CHUNK_SIZE,
+        chunk_overlap=CHUNK_OVERLAP,
+        separators=["\n\n", "\n", ". ", " ", ""],
+    )
+    chunks: List[str] = []
+    for para in [p.strip() for p in text.split("\n\n") if p.strip()]:
+        chunks.extend([para] if len(para) <= CHUNK_SIZE else splitter.split_text(para))
+    return [
+        {"text": c, "source": source, "page": page, "chunk_index": i}
+        for i, c in enumerate(chunks) if c.strip()
+    ]
+
+
+def embed_texts(texts: List[str]) -> List[List[float]]:
+    """Batch-embed texts using Azure text-embedding model."""
+    embeddings = []
+    for i in range(0, len(texts), 16):
+        batch    = [t[:30000] for t in texts[i : i + 16]]
+        response = _az.embeddings.create(model=_EMBEDDING_MODEL, input=batch)
+        embeddings.extend(
+            item.embedding for item in sorted(response.data, key=lambda x: x.index)
+        )
+    return embeddings
+
+
+def ingest_document_to_rag(file_bytes: bytes, filename: str) -> Dict:
+    """
+    Extract text from a PDF, chunk it, embed it, and store in ChromaDB.
+    Returns {doc_id, filename, pages, total_chunks}.
+    """
+    from langchain_community.document_loaders import PyPDFLoader
+    import tempfile
+
+    if not filename.lower().endswith(".pdf"):
+        raise ValueError("Only PDF files can be ingested into the knowledge base.")
+
+    # Write to a temp file for PyPDFLoader
+    doc_id = str(uuid.uuid4())
+    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+        tmp.write(file_bytes)
+        tmp_path = tmp.name
+
+    try:
+        loader    = PyPDFLoader(tmp_path)
+        pages     = loader.load()
+        page_data = [
+            {"page": doc.metadata.get("page", i) + 1, "text": doc.page_content}
+            for i, doc in enumerate(pages)
+        ]
+    finally:
+        Path(tmp_path).unlink(missing_ok=True)
+
+    all_chunks: List[Dict] = []
+    for pg in page_data:
+        cleaned = _clean_text_for_ingest(pg["text"])
+        if cleaned:
+            all_chunks.extend(_hybrid_chunk(cleaned, filename, pg["page"]))
+
+    if not all_chunks:
+        raise ValueError("No text content could be extracted from this PDF.")
+
+    embeddings = embed_texts([c["text"] for c in all_chunks])
+
+    _collection.upsert(
+        ids        = [f"{doc_id}_{i}" for i in range(len(all_chunks))],
+        embeddings = embeddings,
+        documents  = [c["text"] for c in all_chunks],
+        metadatas  = [
+            {"source": c["source"], "page": c["page"],
+             "chunk_index": c["chunk_index"], "doc_id": doc_id}
+            for c in all_chunks
+        ],
+    )
+
+    return {
+        "doc_id"      : doc_id,
+        "filename"    : filename,
+        "pages"       : len(page_data),
+        "total_chunks": len(all_chunks),
+    }
+
+
+def list_rag_documents() -> List[Dict]:
+    """Return summary list of all ingested documents."""
+    if _collection.count() == 0:
+        return []
+    all_items = _collection.get(include=["metadatas"])
+    docs: Dict[str, Dict] = {}
+    for meta in all_items.get("metadatas", []):
+        did = meta.get("doc_id", "unknown")
+        if did not in docs:
+            docs[did] = {"doc_id": did, "filename": meta.get("source", ""), "total_chunks": 0}
+        docs[did]["total_chunks"] += 1
+    return list(docs.values())
+
+
+def delete_rag_document(doc_id: str) -> int:
+    """Delete all chunks belonging to doc_id. Returns number of deleted chunks."""
+    ids = _collection.get(where={"doc_id": doc_id}, include=[]).get("ids", [])
+    if not ids:
+        raise ValueError(f"Document {doc_id} not found.")
+    _collection.delete(ids=ids)
+    return len(ids)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# IMAGE UTILITIES
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _resize_image(image_bytes: bytes, max_ratio: int = MAX_IMAGE_RATIO) -> Optional[str]:
+    """Resize extreme-ratio images and return as base64 JPEG. None on failure."""
+    try:
+        img   = Image.open(io.BytesIO(image_bytes))
+        w, h  = img.size
+        if not w or not h:
+            return None
+        ratio = max(w / h, h / w)
+        if ratio > max_ratio:
+            if w > h:
+                img = img.resize((int(h * max_ratio), h), Image.Resampling.LANCZOS)
+            else:
+                img = img.resize((w, int(w * max_ratio)), Image.Resampling.LANCZOS)
+        buf = io.BytesIO()
+        img.convert("RGB").save(buf, format="JPEG", optimize=True, quality=85)
+        return base64.b64encode(buf.getvalue()).decode("utf-8")
+    except Exception as e:
+        print(f"  ⚠ Image resize failed: {e}")
+        return None
+
+
+_OCR_PROMPT = """Perform EXACTLY TWO tasks:
+
+1. OCR — extract ALL visible text exactly as it appears. Preserve spelling, capitalisation, punctuation. Return empty string if no text.
+
+2. IMAGE DESCRIPTION — detailed, objective description.
+
+⚠️ LOGO / ICON RULE: If image is ONLY a logo/icon, set "image_description" to ONLY the logo/icon name and skip all remaining sections.
+
+Otherwise describe:
+A. Image type  B. Layout (use positional terms: top-left, center, etc.)
+C. Visual elements with positions  D. Text, labels, annotations
+E. Data flows, relationships  F. Colour scheme  G. Purpose and context
+H. UI element testing requirements  I. Final summary
+
+OUTPUT — valid JSON only, no markdown:
+{"ocr_text": "...", "image_description": "..."}"""
+
+
+def _call_azure_vision(image_b64: str, max_retries: int = 3, retry_delay: int = 2) -> Dict:
+    """Call Azure vision model for OCR + description of one image."""
+    for attempt in range(1, max_retries + 1):
+        try:
+            response = _az.chat.completions.create(
+                model=_CHAT_MODEL,
+                messages=[
+                    {"role": "system", "content":
+                        "You are a computer vision and OCR engine. "
+                        "Always return a SINGLE valid JSON object. "
+                        "No markdown, no code blocks, no extra text."},
+                    {"role": "user", "content": [
+                        {"type": "text",      "text": _OCR_PROMPT},
+                        {"type": "image_url", "image_url":
+                            {"url": f"data:image/jpeg;base64,{image_b64}"}},
+                    ]},
+                ],
+                max_tokens=2000,
+            )
+            raw = response.choices[0].message.content.strip()
+            raw = re.sub(r"^```(json)?", "", raw, flags=re.IGNORECASE).strip()
+            raw = re.sub(r"```$", "", raw).strip()
+            result = json.loads(raw)
+            return {"ocr_text": result.get("ocr_text", ""),
+                    "image_description": result.get("image_description", "")}
+        except Exception as e:
+            with _print_lock:
+                print(f"  ⚠ Azure OCR attempt {attempt}/{max_retries}: {e}")
+            if attempt < max_retries:
+                time.sleep(retry_delay)
+    return {"ocr_text": "", "image_description": ""}
+
+
+def _is_logo(description: str) -> bool:
+    d  = description.lower().strip()
+    kw = ("logo", "icon", "brand", "emblem", "seal", "watermark")
+    return len(d) < 80 and any(k in d for k in kw)
+
+
+def _process_image_in_thread(page_num: int, img_idx: int, b64: str
+                              ) -> Tuple[int, int, str, str]:
+    with _print_lock:
+        print(f"  🖼  Page {page_num}, Image {img_idx}: Azure vision…")
+    r = _call_azure_vision(b64)
+    return page_num, img_idx, r["ocr_text"], r["image_description"]
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PAGE EXTRACTION  (4-pass pipeline)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def extract_pages_with_images(file_bytes: bytes, filename: str) -> List[Dict]:
+    """
+    Extract per-page content (text + image OCR/descriptions, logo-aware).
+
+    Returns list of {"page_number": int, "complete_text": str}.
+
+    PDF — 4 passes:
+      1. Find repeated xrefs (logos / headers / watermarks).
+      2. Extract raw text; queue non-logo images for Azure vision.
+      3. Parallel Azure vision calls (threaded).
+         If the description looks like a logo → discard.
+      4. Assemble: raw_text + [Image N OCR] + [Image N Description].
+
+    DOCX — paragraph text split into batches (no image processing).
+    """
+    ext = filename.lower()
+
+    # ── DOCX path ─────────────────────────────────────────────────────────────
+    if ext.endswith(".docx"):
+        from docx import Document as DocxDoc
+        try:
+            doc   = DocxDoc(io.BytesIO(file_bytes))
+            paras = [p.text.strip() for p in doc.paragraphs if p.text.strip()]
+            batch = 60
+            pages = []
+            for i, start in enumerate(range(0, max(len(paras), 1), batch), 1):
+                pages.append({
+                    "page_number":   i,
+                    "complete_text": "\n\n".join(paras[start : start + batch]),
+                })
+            return pages or [{"page_number": 1, "complete_text": ""}]
+        except Exception as e:
+            raise ValueError(f"DOCX extraction failed: {e}")
+
+    if not ext.endswith(".pdf"):
+        raise ValueError(f"Unsupported file type: {filename}")
+
+    # ── PDF path ──────────────────────────────────────────────────────────────
+    try:
+        doc = fitz.open(stream=file_bytes, filetype="pdf")
+    except Exception as e:
+        raise ValueError(f"Cannot open PDF: {e}")
+
+    total = doc.page_count
+    if total == 0:
+        doc.close()
+        raise ValueError("PDF has no pages.")
+
+    # Pass 1 — repeated xrefs
+    print(f"\n📄 Pass 1: identifying repeated images across {total} pages…")
+    all_xrefs: List[int] = []
+    for p in range(total):
+        try:
+            all_xrefs.extend(img[0] for img in doc[p].get_images(full=True))
+        except Exception:
+            pass
+    repeated = {xref for xref, cnt in Counter(all_xrefs).items() if cnt > 2}
+    print(f"  → {len(repeated)} repeated xrefs identified (likely logos/headers).")
+
+    # Pass 2 — extract text + queue images
+    print("📄 Pass 2: extracting text and collecting images…")
+    page_raw:  Dict[int, str]             = {}
+    queue:     List[Tuple[int, int, str]] = []
+
+    for p_idx in range(total):
+        pn   = p_idx + 1
+        page = doc[p_idx]
+        parts: List[str] = []
+
+        raw = page.get_text("text").strip()
+        if raw:
+            parts.append(raw)
+
+        for img_idx, img in enumerate(page.get_images(full=True), start=1):
+            xref = img[0]
+            if xref in repeated:
+                continue
+            try:
+                base_img  = doc.extract_image(xref)
+                img_bytes = base_img["image"]
+                img_name  = base_img.get("name", "").lower()
+                if any(kw in img_name for kw in ("logo", "header", "footer", "watermark")):
+                    print(f"  ⏭  Page {pn}, Image {img_idx}: skipped by name")
+                    continue
+                b64 = _resize_image(img_bytes)
+                if b64:
+                    queue.append((pn, img_idx, b64))
+                    print(f"  ✓ Page {pn}, Image {img_idx}: queued")
+            except Exception as e:
+                print(f"  ✗ Page {pn}, Image {img_idx}: extract error — {e}")
+
+        page_raw[pn] = "\n\n".join(parts)
+
+    doc.close()
+    print(f"  → {len(queue)} images queued for Azure vision.")
+
+    # Pass 3 — parallel Azure vision
+    workers = min(IMAGE_OCR_MAX_WORKERS, max(len(queue), 1))
+    print(f"📄 Pass 3: Azure vision ({workers} threads)…")
+    azure: Dict[Tuple[int, int], Tuple[str, str]] = {}
+
+    if queue:
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            futures = {
+                ex.submit(_process_image_in_thread, pn, ii, b64): (pn, ii)
+                for pn, ii, b64 in queue
+            }
+            for fut in as_completed(futures):
+                pn, ii = futures[fut]
+                try:
+                    _, _, ocr, desc = fut.result()
+                    if _is_logo(desc):
+                        with _print_lock:
+                            print(f"  🔍 Page {pn}, Image {ii}: logo detected → discarded")
+                        azure[(pn, ii)] = ("", "")
+                    else:
+                        azure[(pn, ii)] = (ocr, desc)
+                        with _print_lock:
+                            print(f"  ✓ Page {pn}, Image {ii}: OCR={len(ocr)}c Desc={len(desc)}c")
+                except Exception as e:
+                    with _print_lock:
+                        print(f"  ✗ Page {pn}, Image {ii}: future error — {e}")
+                    azure[(pn, ii)] = ("", "")
+
+    # Pass 4 — assemble
+    print("📄 Pass 4: assembling page content…")
+    pages_data: List[Dict] = []
+    for pn in range(1, total + 1):
+        parts = [page_raw.get(pn, "")]
+        for (apn, aii) in sorted((k for k in azure if k[0] == pn), key=lambda x: x[1]):
+            ocr, desc = azure[(apn, aii)]
+            if ocr:
+                parts.append(f"[Image {aii} OCR]:\n{ocr}")
+            if desc:
+                parts.append(f"[Image {aii} Description]:\n{desc}")
+        complete = "\n\n".join(p for p in parts if p.strip())
+        pages_data.append({"page_number": pn, "complete_text": complete})
+        print(f"  ✓ Page {pn}: {len(complete)} chars")
+
+    print(f"✅ Extraction complete. {len(pages_data)} pages ready.\n")
+    return pages_data
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PER-PAGE RAG RETRIEVAL
+# ══════════════════════════════════════════════════════════════════════════════
+
+def retrieve_rag_chunks_for_page(page_text: str, top_k: int = PAGE_RAG_TOP_K) -> List[Dict]:
+    """
+    Embed page_text and retrieve the top-k most relevant chunks from ChromaDB.
+    Detailed log printed so terminal shows exactly what was retrieved for each page.
+    """
+    if _collection.count() == 0 or not page_text.strip():
+        print("  📚 RAG: skipped (collection empty or page has no text)")
+        return []
+
+    query_vec = embed_texts([page_text[:1500]])[0]
+    n         = min(top_k, _collection.count())
+    results   = _collection.query(
+        query_embeddings=[query_vec],
+        n_results=n,
+        include=["documents", "metadatas", "distances"],
+    )
+    chunks = [
+        {"text": doc, "source": meta.get("source", ""),
+         "page": meta.get("page", 0), "score": round(1.0 - float(dist), 4)}
+        for doc, meta, dist in zip(
+            results["documents"][0], results["metadatas"][0], results["distances"][0]
+        )
+    ]
+
+    print(f"  📚 RAG: {len(chunks)} chunk(s) retrieved "
+          f"(requested up to {top_k}, collection size={_collection.count()})")
+    for idx, c in enumerate(chunks, 1):
+        preview = c["text"][:120].replace("\n", " ")
+        print(f"    [{idx}] score={c['score']:.4f} | "
+              f"source={c['source']} p{c['page']} | "
+              f"text: {preview}{'…' if len(c['text']) > 120 else ''}")
+
+    return chunks
+
+
+def _build_rag_context_block(chunks: List[Dict]) -> str:
+    lines, total = [], 0
+    for c in chunks:
+        entry = f"[Source: {c['source']}, Page {c['page']}]\n{c['text']}"
+        if total + len(entry) > MAX_CONTEXT_CHARS:
+            break
+        lines.append(entry)
+        total += len(entry)
+    return "\n\n---\n\n".join(lines)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SYSTEM PROMPTS
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _system_prompt_uat() -> str:
+    return """## UAT Test Case Generation Rules
+
+### Coverage
+For each feature / field / button / navigation identified, generate:
+- Minimum 2 Positive tests (valid inputs, happy path)
+- Minimum 2 Negative tests (invalid inputs — document-driven only)
+- Minimum 2 Exceptional tests (boundary values, edge cases)
+
+### Granularity (CRITICAL)
+- ONE test case per functionality
+- ONE test case per field validation
+- ONE test case per button / CTA
+- ONE test case per navigation flow (do NOT split into multiple tests)
+- ONE test case per error scenario
+
+### Test Data
+- Specific, realistic values — no placeholders
+- Indian currency context (₹50,000)
+- Realistic Indian names, valid account/date formats from the document
+
+### Expected Result
+Specific, measurable, verifiable — exact messages, status codes, UI changes.
+
+### Skip Rules
+Do NOT generate test cases for: CR numbers, logos, table of contents, heading-only pages.
+No hypothetical errors not backed by document requirements.
+No duplicate test cases.
+
+### Ordering
+Follow the functional flow order from the document.
+
+## Output
+Return ONLY a valid JSON array — no markdown, no explanations.
+Required fields: "Test Case ID", "Test Case Name", "Scenario Name", "Type",
+"Description", "Steps", "Test Data", "Expected Result", "Page No"
+"""
+
+
+def _system_prompt_sit() -> str:
+    return """## SIT Test Case Generation Rules
+
+### Purpose
+System Integration Testing — module-to-module interactions, API contracts, data flows.
+
+### Coverage
+Per integration point: min 1 positive + 1 negative (if validations exist) + 1 exceptional.
+
+### Granularity (CRITICAL)
+ONE test case per integration point / field / API call / workflow step.
+
+### Test Data
+- Realistic actual values (account numbers, amounts, names)
+- Boundary values for numeric / date fields
+- Indian currency for financial fields
+
+### Steps Format
+Source system → Target system → Data passed → Expected behavior.
+
+### Expected Result
+HTTP status, DB state changes, event logs, error messages — precise and measurable.
+
+### Skip Rules
+Do NOT generate test cases for: CR numbers, logos, TOC, heading-only pages.
+
+### Naming Convention
+"Verify [specific integration / field / action] [under specific condition]"
+
+## Output
+Return ONLY a valid JSON array — no markdown, no explanations.
+Required fields: "Test Case ID", "Test Case Name", "Scenario Name", "Type",
+"Description", "Steps", "Test Data", "Expected Result", "Page No"
+"""
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PAGE PROMPT BUILDER
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _build_page_prompt(
+    page_text:     str,
+    page_number:   int,
+    document_name: str,
+    rag_context:   str,
+    user_prompt:   Optional[str],
+    testcase_type: str,
+    prompt_file_content: Optional[str] = None,
+    selected_department_description: Optional[str] = None,
+) -> str:
+    rag_block = (
+        f"\n## Reference Knowledge (from Knowledge Base)\n"
+        f"Use as domain context only — do not generate test cases based solely on this.\n\n"
+        f"{rag_context}\n"
+        if rag_context.strip() else ""
+    )
+    dept_block = (
+        f"\n## Department Context\n{selected_department_description}\n"
+        if selected_department_description else ""
+    )
+    extra = f"\n## Additional Instructions\n{user_prompt}\n" if user_prompt else ""
+    test_data_block = (
+        f"\n## Test Data Reference\n{prompt_file_content}\n"
+        if prompt_file_content else ""
+    )
+
+    return f"""You are an expert QA analyst generating {testcase_type} test cases for ONE page of a solution document.
+
+## Document
+Name   : {document_name}
+Page   : {page_number}
+{rag_block}{dept_block}{extra}{test_data_block}
+## Page Content
+{page_text[:20000]}
+
+---
+
+Generate test cases for Page {page_number} above.
+
+Each JSON object MUST include ALL these fields:
+- "Test Case ID"    — Format: TC_P{page_number}_001, TC_P{page_number}_002, …
+- "Test Case Name"  — Descriptive, 50–100 chars
+- "Scenario Name"   — Feature / module / integration point
+- "Type"            — "Positive" | "Negative" | "Exceptional"
+- "Description"     — Clear test objective
+- "Steps"           — "1. Step one\\n2. Step two\\n3. Step three"
+- "Test Data"       — Specific realistic values (no placeholders)
+- "Expected Result" — Precise, measurable outcome
+- "Page No"         — "{page_number}"
+
+### Critical Rules
+1. Only content explicitly in Page {page_number} — no assumptions.
+2. Do NOT generate for: CR numbers, logos, TOC, heading-only pages.
+3. No duplicate test cases.
+4. Realistic test data — never "Test User", "xyz", "<value>".
+5. Follow functional flow order.
+6. If no testable content on this page → return empty array: []
+
+Output ONLY a valid JSON array. No markdown, no explanations.
+"""
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# JSON HELPERS
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _clean_json(raw: str) -> str:
+    raw = re.sub(r"^```(json)?", "", raw.strip(), flags=re.IGNORECASE).strip()
+    raw = re.sub(r"```$", "", raw).strip()
+    raw = re.sub(r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]", "", raw)
+    raw = re.sub(r",\s*([\]\}])", r"\1", raw)
+    raw = re.sub(r"//.*?\n", "\n", raw)
+    return re.sub(r"/\*.*?\*/", "", raw, flags=re.DOTALL).strip()
+
+
+def _parse_json(raw: str) -> list:
+    for attempt in range(1, 5):
+        try:
+            if attempt == 1:
+                r = json.loads(raw)
+            elif attempt == 2:
+                r = json.loads(re.sub(r",\s*([\]\}])", r"\1", raw))
+            elif attempt == 3:
+                last = raw.rfind("}")
+                if last == -1:
+                    continue
+                cand = raw[:last + 1].strip()
+                cand = ("[" + cand + "]") if not cand.startswith("[") else (cand + "]")
+                r    = json.loads(cand)
+            else:
+                objs = []
+                for m in re.finditer(r"\{[^{}]+\}", raw, re.DOTALL):
+                    try:
+                        objs.append(json.loads(m.group()))
+                    except Exception:
+                        pass
+                if not objs:
+                    raise ValueError("No objects found")
+                r = objs
+            return r if isinstance(r, list) else [r]
+        except Exception:
+            pass
+    raise ValueError("All JSON parsing strategies failed.")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PER-PAGE TESTCASE GENERATION
+# ══════════════════════════════════════════════════════════════════════════════
+
+def generate_testcases_for_page_rag(
+    page_number:   int,
+    page_text:     str,
+    document_name: str,
+    rag_chunks:    List[Dict],
+    user_prompt:   Optional[str],
+    testcase_type: str,
+    prompt_file_content: Optional[str] = None,
+    selected_department_description: Optional[str] = None,
+) -> Dict:
+    """
+    Generate test cases for a single page using page text + RAG context.
+    Returns {page_number, testcases, status, finish_reason?, error?}.
+    """
+    if not page_text.strip():
+        return {"page_number": page_number, "testcases": [],
+                "status": "skipped", "error": "No text content on page"}
+
+    system_msg = _system_prompt_sit() if testcase_type == "SIT" else _system_prompt_uat()
+    user_msg   = _build_page_prompt(
+        page_text    = page_text,
+        page_number  = page_number,
+        document_name= document_name,
+        rag_context  = _build_rag_context_block(rag_chunks),
+        user_prompt  = user_prompt,
+        testcase_type= testcase_type,
+        prompt_file_content=prompt_file_content,
+        selected_department_description=selected_department_description,
+    )
+
+    max_retries, retry_delay = 3, 2
+    for attempt in range(1, max_retries + 1):
+        try:
+            response      = _az.chat.completions.create(
+                model       = _CHAT_MODEL,
+                messages    = [
+                    {"role": "system", "content": system_msg},
+                    {"role": "user",   "content": user_msg},
+                ],
+                temperature = 0.3,
+                max_tokens  = 4096,
+            )
+            choice        = response.choices[0]
+            raw           = (choice.message.content or "").strip()
+            finish_reason = choice.finish_reason
+
+            icon = "✅" if finish_reason == "stop" else "⚠️"
+            print(f"\n  {icon} Page {page_number} | finish_reason={finish_reason!r}"
+                  + (" (truncated!)" if finish_reason == "length" else ""))
+
+            testcases = _parse_json(_clean_json(raw))
+            for tc in testcases:
+                if isinstance(tc, dict):
+                    tc["Page No"] = str(page_number)
+
+            sep = "─" * 60
+            print(f"  {sep}")
+            print(f"  📋 Page {page_number}: {len(testcases)} test case(s)")
+            for i, tc in enumerate(testcases, 1):
+                if not isinstance(tc, dict):
+                    continue
+                print(f"    {i:>3}. [{tc.get('Type',''):<11}] "
+                      f"{tc.get('Test Case ID','')} | "
+                      f"{tc.get('Test Case Name','')[:80]}")
+            print(f"  {sep}\n")
+
+            return {"page_number": page_number, "testcases": testcases,
+                    "status": "success", "finish_reason": finish_reason}
+
+        except Exception as e:
+            print(f"  ✗ Page {page_number} attempt {attempt}/{max_retries}: {e}")
+            if attempt < max_retries:
+                time.sleep(retry_delay)
+
+    return {"page_number": page_number, "testcases": [],
+            "status": "failed", "error": "All retry attempts exhausted"}
