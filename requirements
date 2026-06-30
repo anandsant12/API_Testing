@@ -9,3 +9,577 @@ pycryptodome
 docx
 python-docx
 mammoth
+
+
+
+
+
+
+
+
+
+
+
+
+
+ 
+
+
+
+
+J27_28_29 – Funds Transfer
+
+
+User Story Name	Bank selection
+User Story Number	J27_28_29_01_Bank_Selection
+
+
+
+
+ 
+
+TABLE OF CONTENTS
+1	User Story	5
+1.1	Description	5
+1.2	Scope	5
+2	Process Diagram	5
+3	Assumptions and Prerequisites	5
+4	Screen Details	6
+4.1	J27_28_29_01_01<< Landing Page >>	6
+4.1.1	Entry Conditions	6
+4.1.2	Field Type, Native, Validations and Business Rules	7
+4.2	J27_28_29_01_02 <<Funds Transfer Landing Page>>	8
+4.2.1	Entry Conditions	8
+4.2.2	Field Type, Native, Validations and Business Rules	8
+4.3	J27_28_29_01_03 <<Bank Selection Screen for Quick Transfer>>	9
+4.3.1	Entry Conditions	10
+4.3.2	Field Type, Native, Validations and Business Rules	10
+4.4	J27_28_29_01_04 <<Bank Selection Screen for Payee>>	13
+4.4.1	Entry Conditions	14
+4.4.2	Field Type, Native, Validations and Business Rules	14
+4.5	J27_28_29_01_05 <<Transaction Rights Error>>	16
+4.5.1	Entry Conditions	17
+4.5.2	Field Type, Native, Validations and Business Rules	17
+4.6	J27_28_29_01_06 <<No Transaction Account Error>>	18
+4.6.1	Entry Conditions	19
+4.6.2	Field Type, Native, Validations and Business Rules	19
+5	Non-Functional Requirements	19
+5.1	General NFR	19
+6	Reconciliation / Batch Jobs	20
+7	Integration	20
+7.1	Integration – Front End	20
+7.2	Integration – Back End	20
+8	Appendix	21
+8.1	References	21
+8.2	Acronyms	21
+8.3	Glossary	21
+
+ 
+Sign off History:
+Version No. 2.1
+	Prepared By	Inspected/Reviewed By	Approved By
+Name	Aditya Maitri	Ramesh Karagaonkar	
+Role	Business Analyst	SME	
+Signature			
+Date	18-Apr-2024	19-Apr-2024	
+
+Version History (Details of Changes)
+Ver No.	Date	Changed By	Changes Made
+1.0	30/01/2024	Aditya Maitri	Initial version
+1.1	12/02/2024	Aditya Maitri	Changed the Error Message “ You don’t have any Transaction Account registered with the YONO Web” to “ You don’t have any Transaction Account registered with YONO ”
+1.2	17/02/2024	Aditya Maitri	Changed the Quick Transfer Process field from “Bank Selection -> Payee Details -> Transaction details -> Authentication ->Success” to “Bank Selection -> Payee and Transaction details -> Authentication ->Success
+1.3	29/02/2024	Aditya Maitri	No changes from v1.2
+2.0	15-Apr-2024	Sriram Balaji R	VDs updated
+2.1	18-Apr-2024	Sriram Balaji R	Changed New Payee to Add Payee along with minor comments changes.
+
+ 
+1	User Story 
+1.1	Description
+This user story captures the navigation path that a registered customer on the YONO Web must follow to select a bank when adding a payee or sending money via quick transfer.
+1.2	Scope
+AS A	Registered customer on the YONO Web
+I WANT TO	Select the Bank of a beneficiary 
+SO THAT	I can add the beneficiary as a payee or send money via quick transfer
+Customer Categories Applicable	Individual
+Other Stakeholder (Sales, Branch Employee, FOS etc.) 	NA
+Applicable Channel	YONO Web
+
+2	Process Diagram
+
+ 
+
+3	Assumptions and Prerequisites
+Sr No	Type	Description
+1	Customer	Customer must be a registered user on YONO Web 
+2	Customer	Customer must select one of the following on the landing page.
+1.	Quick Transfer
+2.	Send Money or Payee and then Customer must select “Add Payee” in the Payee screen. (To be covered in user story (J27_28_29_FT_14_Payee Screen)
+3	Customer	Customer must select one of the following on the Funds Transfer landing page.
+1.	Quick Transfer
+2.	Send Money or Payee and then Customer must select “Add Payee” in the Payee screen. (To be covered in user story (J27_28_29_FT_14_Payee Screen)
+
+4	Screen Details
+4.1	J27_28_29_01_01<< Landing Page >>
+Navigation Thread	Login Screen ->    Landing Page
+
+Acceptance Criteria Number	
+FIGMA Screen Name/No	J27_28_29_01_01_Landing Page
+Figma file link	https://www.figma.com/file/7fHmKZuVr12IUNqFdivmVF/SBI-YONO-2.0-Fund-Transfer-VD-WEB?node-id=0%3A1&mode=dev
+
+UI Figma/ Wireframe Screen Shot
+
+	   
+Description/ New Rules	The Landing Page of YONO Web
+User & Roles	ETB
+
+4.1.1	Entry Conditions
+	Entry Point	Attributes	Details
+Successfully authenticating in the login screen 
+( J114_Screen_05_01 ) 	Pre-Condition	Successful authentication in the login screen for YONO Web
+
+	Expected Result	The landing page of YONO Web with varies functionalities under Funds Transfer
+	Alternate Scenario	NA
+	Error Handling	NA
+	GA Event	On Entry event to be called in GA
+
+4.1.2	Field Type, Native, Validations and Business Rules
+S.No	Name	Attributes	Details
+1	All other Fields on the landing Page expect the ones mentioned below	Field Label	NA
+		Field Type	NA
+		Field Validation	NA
+		Lookup Value & Source	NA
+		Action	To be covered in Landing Page User Story
+		Help/Prompt	NA 
+2	Quick Transfer	Field Label	Quick Transfer
+		Field Type	Button
+		Field Validation	NA
+		Lookup Value & Source	NA
+		Action	If Quick Transfer is clicked on Landing page, Proceed to Screen J27_28_29_01_03_Bank_Selection_Quick_Transfer if the user has 
+1)	At least one linked account without “View Only” transaction rights on YONO Web
+2)	At least one transaction account registered with the YONO Web
+
+Proceed to Screen J27_28_29_01_05_Transaction_Rights_Error when user clicks on Quick Transfer on landing page, but the user has all the linked accounts with “View Only” transaction rights 
+
+Proceed to Screen J27_28_29_01_06_No_Transaction_Account_Error when user clicks on Quick Transfer on landing page, but the user has no transaction account registered with the YONO Web
+		Help/Prompt	NA 
+3	Send Money	Field Label	Send Money
+		Field Type	Button
+		Field Validation	NA
+		Lookup Value & Source	NA
+		Action	Proceed to Payee Screen (J27_28_29_FT_14_Payee Screen) when user has pressed on Send Money on the landing page.
+		Help/Prompt	NA 
+4	Manage Payee
+	Field Label	Manage Payee
+		Field Type	Button
+		Field Validation	NA
+		Lookup Value & Source	NA
+		Action	Proceed to Payee Screen (J27_28_29_FT_14_Payee Screen) when user has pressed on Payee on the landing page
+		Help/Prompt	NA 
+
+
+
+
+4.2	J27_28_29_01_02 <<Funds Transfer Landing Page>>
+Navigation Thread	NA
+
+Acceptance Criteria Number	
+FIGMA Screen Name/No	NA
+Figma file link	NA
+UI Figma/ Wireframe Screen Shot
+
+	Screen not applicable, section has been kept to maintiain the nomenclature of the following screens
+Description/ New Rules	NA
+User & Roles	NA
+
+4.3	J27_28_29_01_03 <<Bank Selection Screen for Quick Transfer>>
+Navigation Thread	1.	Landing Page -> Payments & Transfer -> Funds Transfer  -> Quick Transfer -> Bank Selection
+2.	
+
+Acceptance Criteria Number	
+FIGMA Screen Name/No	J27_28_29_01_03_Bank_Selection_Quick_Transfer
+Figma file link	https://www.figma.com/file/7fHmKZuVr12IUNqFdivmVF/SBI-YONO-2.0-Fund-Transfer-VD-WEB?node-id=0%3A1&mode=dev
+
+UI Figma/ Wireframe Screen Shot
+
+	  
+Description/ New Rules	The Bank Selection screen showing different domestic banks, along with CTA.
+1.	Use MMID 
+2.	Scan Cheque
+User & Roles	Existing to the Bank Customer
+
+4.3.1	Entry Conditions
+	Entry Point	Attributes	Details
+Quick Transfer on Landing Page
+	Pre-Condition	Customer must select Quick Transfer on the landing page
+	Expected Result	A screen having different banks – (12 popular banks & all banks) with an option to search for a bank using the SEARCH BANK field
+	Alternate Scenario	NA
+	Error Handling	NA
+	GA Event	On Entry event to be called in GA
+
+4.3.2	Field Type, Native, Validations and Business Rules
+S.No	Name	Attributes	Details
+1	Navigation Menu 1
+	Field Name	NA 
+		Field Type	Menu
+		Field Validation	NA
+		Lookup Value & Source	CMS
+		Action	To be covered in Landing Page user story
+		Help/Prompt	NA
+2	Navigation Menu 2	Field Name	To be covered in Landing Page user story
+		Field Type	Menu
+		Field Validation	NA
+		Lookup Value & Source	CMS
+		Action	Payments to be highlighted in bold in the Menu. All others shouldn’t be highlighted
+		Help/Prompt	NA
+3	Breadcrumbs	Field Name	Back to home
+		Field Type	Text
+		Field Validation	NA
+		Lookup Value & Source	CMS
+		Action	Navigate the user back to the landing page
+		Help/Prompt	NA
+4	Screen Description	Field Name	Quick Transfer 
+		Field Type	Card View
+		Field Validation	NA
+		Lookup Value & Source	CMS
+		Action	NA
+		Help/Prompt	NA
+5	Quick Transfer Process	Field Name	Bank Selection -> Payee and Transaction details -> Authentication ->Success
+		Field Type	Image
+		Field Validation	NA
+		Lookup Value & Source	CMS
+		Action	Bank Selection should be highlighted in Bold and Payee and transaction Details are displayed as up next
+		Help/Prompt	NA
+6	Note below Payee Addition Process	Field Name	Select Payee Bank
+		Field Type	Text
+		Field Validation	NA
+		Lookup Value & Source	CMS
+		Action	NA
+		Help/Prompt	NA
+7	Search by Bank name 	Field Label	Search Bank
+		Field Type	Text
+		Field Validation	Accept all characters
+		Lookup Value & Source	Bank column in the IFSC Master. 
+		Action	The list of relevant banks appears as & when user types in the textbox. 
+
+The search logic will be as follows: 
+
+When a user types of an input “XXX” of length “L”, the list of following items from the bank column in the IFSC Master to be displayed in order of appearance as mentioned.
+
+•	First – All the items in the bank column of IFSC master which begin from XXX in alphabetical order.
+•	Second – All the items in the bank column of IFSC master which have one character “C” before the input “XXX” in alphabetical order.
+•	Third - All the items in the bank column of IFSC master which have two characters “CC” before the input “XXX” in alphabetical order.
+•	Fourth - All the items in the bank column of IFSC master which have three characters “CCC” before the input “XXX” in alphabetical order.
+
+And so on.
+
+If the user input “XXX” of length “L” and no items are found, “Bank not found” appears in the list. 
+
+
+When user presses on any of the bank in the list appeared, it should proceed the user to the payment screen of Quick Transfer (To be proceeded in user story J27_28_29_02_Quick_Transfer)
+
+		Help/Prompt	NA
+8	12 Popular Banks	Field Label	Popular Banks
+		Field Type	Button with Logo and name of the Bank
+		Field Validation	NA
+		Lookup Value & Source	SBI, HDFC Bank, ICICI Bank, Axis Bank, Kotak Mahindra Bank, Bank Of Baroda, Punjab National Bank, YES Bank, Bank of India, IDBI Bank, Union Bank of India, IndusInd Bank. (These banks can change based on the Maker-checker for admin portal and configurable)
+		Action	When a user presses on any of the popular banks, it should proceed the user to the payment screen of Quick Transfer (To be proceeded in user story J27_28_29_02_Quick_Transfer)
+		Help/Prompt	NA
+9	All Banks	Field Label	All Banks
+		Field Type	List of scrollable buttons containing 21 banks and “Other Banks” option
+		Field Validation	NA
+		Lookup Value & Source	Axis Bank, Bank of Baroda, Bank of India, Bank of Maharashtra, Canara Bank, Central Bank of India, Citibank, Federal Bank, HDFC Bank, ICICI Bank, IDBI Bank, Indian Bank, Indian Overseas Bank, IndusInd Bank, Karur Vysya Bank, Kotak Mahindra Bank, Punjab National Bank, South Indian Bank, State Bank of India,  Union Bank of India, YES Bank, Other Banks. These 22 items are to be displayed (which are configurable). 
+		Action	When a user presses on any of the bank in all banks list, it should proceed the user to the payment screen of Quick Transfer (To be proceeded in user story J27_28_29_02_Quick_Transfer)
+		Help/Prompt	NA 
+10	Use MMID	Field Label	Use MMID 
+		Field Type	Button
+		Field Validation	NA
+		Lookup Value & Source	NA
+		Action	Proceed the user to the user story MMID flow: J27_28_29_11_MMID_Transaction_Flow 
+		Help/Prompt	NA
+11	Upload Cheque	Field Label	Upload Cheque
+		Field Type	Button
+		Field Validation	NA
+		Lookup Value & Source	NA
+		Action	Proceed the user to screen J27_28_29_FT_05_Scr01_Upload Cheque
+		Help/Prompt	NA
+
+4.4	J27_28_29_01_04 <<Bank Selection Screen for Payee>>
+Navigation Thread	1.	Landing Page -> Payments & Transfer -> Funds Transfer -> Payee -> Add Payee -> Bank Selection
+2.	Landing Page -> Payments & Transfer -> Funds Transfer -> Send Money -> Add Payee -> Bank Selection
+
+
+Acceptance Criteria Number	
+FIGMA Screen Name/No	J27_28_29_01_04_Bank_Selection_Payee
+Figma file link	https://www.figma.com/file/7fHmKZuVr12IUNqFdivmVF/SBI-YONO-2.0-Fund-Transfer-VD-WEB?node-id=0%3A1&mode=dev
+
+UI Figma/ Wireframe Screen Shot
+
+	  
+Description/ New Rules	The Bank Selection screen showing different domestic banks, along with CTA. 
+1.	Use MMID 
+2.	Scan Cheque
+User & Roles	ETB Customer 
+
+
+4.4.1	Entry Conditions
+	Entry Point	Attributes	Details
+Add Payee Button in Payee Screen (J27_28_29_FT_14_Payee Screen)
+	Pre-Condition	Customer must select Payee or Send Money on the landing page or select Send money or Payee on the Funds Transfer Landing Page and then select “Add Payee” in the Payee screen. To be covered in User story (J27_28_29_FT_14_Payee_Screen)
+
+	Expected Result	A screen having different banks – (12 Popular banks & all banks) with an option to search for a bank using the SEARCH BANK field
+	Alternate Scenario	NA
+	Error Handling	NA
+	GA Event	On Entry event to be called in GA
+
+4.4.2	Field Type, Native, Validations and Business Rules
+S.No	Name	Attributes	Details
+1	Navigation Menu 1
+	Field Name	NA 
+		Field Type	Menu
+		Field Validation	NA
+		Lookup Value & Source	CMS
+		Action	To be covered in Landing Page user story
+		Help/Prompt	NA
+2	Navigation Menu 2	Field Name	To be covered in Landing Page user story
+		Field Type	Menu
+		Field Validation	NA
+		Lookup Value & Source	CMS
+		Action	Payments to be highlighted in bold in the Menu. All others shouldn’t be highlighted
+		Help/Prompt	NA
+3	Breadcrumbs	Field Name	Back to home
+		Field Type	Text
+		Field Validation	NA
+		Lookup Value & Source	CMS
+		Action	Navigate the user back to the landing page
+		Help/Prompt	NA
+4	Screen Description	Field Name	“Add  Payee” 
+		Field Type	Card View
+		Field Validation	NA
+		Lookup Value & Source	CMS
+		Action	NA
+		Help/Prompt	NA
+5	Payee Addition Process	Field Name	Bank Selection -> Payee Details -> Authentication -> Success
+		Field Type	Image
+		Field Validation	NA
+		Lookup Value & Source	CMS
+		Action	Bank Selection should be highlighted in Bold and Payee Details are displayed as up next
+		Help/Prompt	NA
+6	Note below Payee Addition Process	Field Name	Select Payee Bank
+		Field Type	Text
+		Field Validation	NA
+		Lookup Value & Source	CMS
+		Action	NA
+		Help/Prompt	NA
+7	Search by Bank name `	Field Label	Search Bank
+		Field Type	Text
+		Field Validation	Accept all characters
+		Lookup Value & Source	Bank column in the IFSC Master
+		Action	The list of relevant banks appears as & when user types in the textbox.
+
+The search logic will be as follows: 
+
+When a user types of an input “XXX” of length “L”, the list of following items from the bank column in the IFSC Master to be displayed in order of appearance as mentioned.
+
+•	First – All the items in the bank column of IFSC master which begin from XXX in alphabetical order.
+•	Second – All the items in the bank column of IFSC master which have one character “C” before the input “XXX” in alphabetical order.
+•	Third - All the items in the bank column of IFSC master which have two characters “CC” before the input “XXX” in alphabetical order.
+•	Fourth - All the items in the bank column of IFSC master which have three characters “CCC” before the input “XXX” in alphabetical order.
+
+And so on.
+
+If the user input “XXX” of length “L” and no items are found, “Bank not found” in the list that appears.
+
+When user presses on any of the bank in the list, it should proceed the user to Adding Payee Details in the Payee Addition (To be proceeded in user story J27_28_29_FT_07_Payee_Addition)
+
+
+		Help/Prompt	NA
+8	12 Popular Banks	Field Label	Popular Banks
+		Field Type	Button with Logo of the Bank
+		Field Validation	NA
+		Lookup Value & Source	SBI, HDFC Bank, ICICI Bank, Axis Bank, Kotak Mahindra Bank, Bank Of Baroda, Punjab National Bank, YES Bank, Bank of India, IDBI Bank, Union Bank of India, IndusInd Bank (These banks can change based on the Maker-checker for admin portal and configurable)
+		Action	When a user presses on any of the popular banks, it should proceed the user to Adding Payee Details in the Payee Addition (To be proceeded in user story J27_28_29_FT_07_Payee_Addition) if user clicked on Add Payee in the Payee Screen 
+		Help/Prompt	NA
+9	All Banks	Field Label	All Banks
+		Field Type	List of scrollable buttons containing 21 banks and “Other Banks” option
+		Field Validation	NA
+		Lookup Value & Source	Axis Bank, Bank of Baroda, Bank of India, Bank of Maharashtra, Canara Bank, Central Bank of India, Citibank, Federal Bank, HDFC Bank, ICICI Bank, IDBI Bank, Indian Bank, Indian Overseas Bank, IndusInd Bank, Karur Vysya Bank, Kotak Mahindra Bank, Punjab National Bank, South Indian Bank, State Bank of India, Union Bank of India, YES Bank, Other Banks.
+. These 22 items to be displayed (which are configurable)
+		Action	When a user presses on any of the bank in all banks list, it should proceed the user to Adding Payee Details in the Payee Addition (To be proceeded in user story J27_28_29_FT_07_Payee_Addition) if user clicked on Add Payee in the payee screen.
+		Help/Prompt	NA
+10	Upload Cheque	Field Label	Upload Cheque
+		Field Type	Button
+		Field Validation	NA
+		Lookup Value & Source	NA
+		Action	Proceed to user story J27_28_29_FT_05_Upload_Cheque
+		Help/Prompt	NA
+11	Use MMID	Field Label	Use MMID 
+		Field Type	Button
+		Field Validation	NA
+		Lookup Value & Source	NA
+		Action	Proceed the user to screen J27_28_29_11_01_Enter_MMID_Details_for_Payee 
+		Help/Prompt	NA
+
+4.5	J27_28_29_01_05 <<Transaction Rights Error>>
+Navigation Thread	1)	Landing Page -> Payments & Transfer -> Funds Transfer  -> Quick Transfer -> Transaction Rights Error
+
+
+Acceptance Criteria Number	
+FIGMA Screen Name/No	J27_28_29_01_05_Transaction_Rights_Error
+Figma file link	https://www.figma.com/file/7fHmKZuVr12IUNqFdivmVF/SBI-YONO-2.0-Fund-Transfer-VD-WEB?node-id=0%3A1&mode=dev
+
+UI Figma/ Wireframe Screen Shot
+
+	  
+Description/ New Rules	The tray appears on landing page when:
+1)	User clicks on Quick Transfer on landing page or Quick Transfer on Funds Transfer Landing Page, but the user has all the linked accounts with “View Only” transaction rights YONO Web
+2)	User clicks on Add Payee in the Payee Screen (J27_28_29_FT_07_Payee_Addition), but the user has all the linked accounts with “View Only” transaction rights on YONO Web
+User & Roles	ETB Customer
+
+4.5.1	Entry Conditions
+	Entry Point	Attributes	Details
+Quick Transfer on Landing Page 
+
+Or
+
+Add Payee button in Payee Screen (J27_28_29_FT_07_Payee_Addition)	Pre-Condition	1)	User clicks on Quick Transfer on landing page, but the user has all the linked accounts with “View Only” transaction rights YONO Web
+2)	User clicks on Add Payee in the Payee Screen (J27_28_29_FT_07_Payee_Addition), but the user has all the linked accounts with “View Only” transaction rights on YONO Web
+	Expected Result	A tray appears on the landing page with the message “You do not have transaction rights enabled.”
+	Alternate Scenario	NA
+	Error Handling	NA
+	GA Event	On Entry event to be called in GA
+
+4.5.2	Field Type, Native, Validations and Business Rules
+S.No	Name	Attributes	Details
+1	Error tray Header	Field Name	Sorry!
+		Field Type	Text
+		Field Validation	NA
+		Lookup Value & Source	CMS
+		Action	NA
+		Help/Prompt	NA
+2	Error Tray sub-text 	Field Label	You do not have transaction rights enabled. Kindly change the transaction rights in manage access
+		Field Type	Text
+		Field Validation	NA
+		Lookup Value & Source	CMS
+		Action	NA
+		Help/Prompt	NA
+3	Okay and Cross button “x”	Field Label	OKAY 
+		Field Type	Button 
+		Field Validation	NA
+		Lookup Value & Source	CMS
+		Action	Disappear the tray
+		Help/Prompt	NA
+
+4.6	J27_28_29_01_06 <<No Transaction Account Error>>
+Navigation Thread	1)	Landing Page -> Payments & Transfer -> Funds Transfer  -> Quick Transfer -> Transaction Rights Error
+
+
+Acceptance Criteria Number	
+FIGMA Screen Name/No	J27_28_29_01_06_No_Transaction_Account_Error
+Figma file link	https://www.figma.com/file/7fHmKZuVr12IUNqFdivmVF/SBI-YONO-2.0-Fund-Transfer-VD-WEB?node-id=0%3A1&mode=dev
+
+UI Figma/ Wireframe Screen Shot
+
+	  
+Description/ New Rules	The tray appears on landing page when:
+1)	User clicks on Quick Transfer on landing page or Quick Transfer on Funds Transfer Landing Page, but the user has no transaction account registered with the YONO Web
+User & Roles	ETB Customer
+ 
+4.6.1	Entry Conditions
+	Entry Point	Attributes	Details
+Quick Transfer on Landing Page 
+
+
+	Pre-Condition	User clicks on Quick Transfer on landing page, but the user has no transaction account registered with the YONO Web 
+
+	Expected Result	A tray appears on the landing page with the message “You don’t have any Transaction Account registered with YONO”
+	Alternate Scenario	NA
+	Error Handling	NA
+	GA Event	On Entry event to be called in GA
+
+4.6.2	Field Type, Native, Validations and Business Rules
+S.No	Name	Attributes	Details
+1	Error tray Header	Field Name	Sorry!
+		Field Type	Text
+		Field Validation	NA
+		Lookup Value & Source	CMS
+		Action	NA
+		Help/Prompt	NA
+2	Error Tray sub-text 	Field Label	You don’t have any Transaction Account registered with YONO 
+		Field Type	Text
+		Field Validation	NA
+		Lookup Value & Source	CMS
+		Action	NA
+		Help/Prompt	NA
+3	Okay and cross button ‘x’	Field Label	OKAY
+		Field Type	Button 
+		Field Validation	NA
+		Lookup Value & Source	NA
+		Action	Disappear the tray
+		Help/Prompt	NA
+
+5	Non-Functional Requirements
+5.1	General NFR
+Sr No	NFR	Expected Outcome
+1	Screen Load Time/Submission Time	NA
+2	Layout Supported	Landscape
+3	Local Storage/Offline storage	NA
+4	Drop Off	NA
+5	Audit/Metrices to be captured	NA
+6	Notification/Alert	NA
+7	Omni Channel Requirement/Partial Data Storage	NA
+8	Document (Lifecycle)	NA
+9	OCR	NA
+10	Consent Management Update	NA
+11	eKYC Tracker	NA
+12	Configuration requirements	1.	List of 12 banks as Popular Banks
+2.	List of 22 items in All bank list
+13	SMS/Email Catalogue	Not applicable since the journey doesn’t require sending SMS/Email
+14	PRM Integration	Not applicable since the journey doesn’t require PRM ( Real Time and Near-Real time) Integration
+
+
+
+6	Reconciliation / Batch Jobs
+This section refers to the Reconciliation and the batch jobs. 
+S.No	Recon /Batch	Attributes	Details
+1	NA	Description	
+		Expected Input	
+		Process Steps	
+		Expected Output	
+
+7	Integration 
+7.1	Integration – Front End
+S.No	API Name	Attributes	Details
+1	NA		
+			
+			
+			
+
+7.2	Integration – Back End
+S.No	API Name	Attributes	Details
+1	getIFSCdetails ()
+	Integration Source	IFSC Master
+		API Brief Description	Get list of relevant banks as & when typed in the bank search box
+		Application/Source	YONO 2.0 Platform
+		Method (Get/Post), Protocol	GET, HTTPS, SSL 1.1, SSL 1.2
+		End Point	<<https://xxxx>>
+		Error Codes / Desc	<<Copy the Error Code and the Error Description table here>>
+
+8	Appendix 
+
+8.1	References
+
+Type	Description
+NA	
+
+
+
+8.2	Acronyms
+Acronym	Description
+NA	
+
+
+8.3	Glossary
+Term	Definition
+NA	
+
+
