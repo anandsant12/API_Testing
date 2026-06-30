@@ -895,3 +895,80 @@ Do NOT generate test cases from rag_context, context_window, or already_generate
     {schema_block}
 
 Return ONLY a valid JSON array starting with [ and ending with ]. No markdown, no explanation."""
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+@testcase_router.post("/generate-testcases")
+async def generate_testcases(
+    request: TestCaseRequest,
+    current_user: Annotated[User, Depends(get_current_active_user)] = ...,
+    save_activity: bool = True,
+):
+    """
+    Generate test cases using structure-aware sliding-window pipeline.
+
+    Flow:
+      1.  Resolve testcase_client from user profile.
+      2.  Load file path from JSON storage (uuid).
+      3.  Move file to in_progress.
+      4.  Save initial UserActivity record.
+      5.  extract_pages_with_images() — text + OCR + image descriptions.
+      6.  For each page:
+            a. detect_page_structure()       — regex, zero LLM cost.
+            b. build_windowed_context()      — prev_tail + current + next_head.
+            c. retrieve_rag_chunks_for_page()— enriched query with tx/screen codes.
+            d. generate_testcases_for_page_rag() — LLM with structure metadata.
+      7.  Combine all page test cases.
+      8.  process_and_clean_testcases() — LLM dedup + renumber.
+      9.  Move to completed, save JSON output, update UserActivity.
+      10. Return consolidated result.
+    """
+    try:
+        # ── 1. Resolve testcase_client from user profile ──────────────────────
+        tc_type = (getattr(current_user, "testcase_client", None) or "UAT").upper()
+        if tc_type not in ("UAT", "SIT"):
+            tc_type = "UAT"
+
+        print(f"\n{'='*60}")
+        print(f"Generate request for UUID : {request.uuid}")
+        print(f"Requested by              : {current_user.email}  role={current_user.role}")
+        print(f"Testcase client           : {tc_type}")
+        print(f"RAG doc_ids               : {request.rag_doc_ids}")
+        print(f"{'='*60}\n")
+
+        # ── Dept description lookup ───────────────────────────────────────────
+        department_description_map = {
+            "yono2"        : SETTINGS.YONO_2_DESCRIPTION,
+            "trade_finance": SETTINGS.TRADE_FINANCE_DESCRIPTION,
+            "inb"          : SETTINGS.INB_DESCRIPTION,
+            "upi"          : SETTINGS.UPI_DESCRIPTION,
+            "yono_business": SETTINGS.YONO_BUSINESS_DESCRIPTION,
+            "atm"          : SETTINGS.ATM_DESCRIPTION,
+            "iph"          : SETTINGS.IPH_DESCRIPTION,
+            "gbss_plus"    : SETTINGS.GBSS_PLUS_DESCRIPTION,
+            "cbs"          : SETTINGS.CBS_DESCRIPTION,
+            "figs_plus"    : SETTINGS.FIGS_PLUS_DESCRIPTION,
+            "nbc"          : SETTINGS.NBC_DESCRIPTION,
+            "api"          : SETTINGS.API_DESCRIPTION,
+        }
+        selected_dept_desc = department_description_map.get(
+            (request.selected_department or "").strip().lower()
+        )
+        print("selected_dept_desc......................",selected_dept_desc)
+        # ── 2. Load from JSON storage ─────────────────────────────────────────
+
