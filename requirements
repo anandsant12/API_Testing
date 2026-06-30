@@ -583,3 +583,315 @@ Term	Definition
 NA	
 
 
+
+
+
+
+
+==================================================================================================================
+
+
+
+def _build_page_prompt(
+    page_text:     str,
+    page_number:   int,
+    document_name: str,
+    rag_context:   str,
+    user_prompt:   Optional[str],
+    testcase_type: str,
+    page_metadata: Optional[dict] = None,
+    prompt_file_content: Optional[str] = None,
+    selected_department_description: Optional[str] = None,
+    department_id: Optional[str] = None,
+    context_window: Optional[str] = None,     # NEW — prev/next page context (read-only)
+    already_covered: Optional[List[str]] = None,  # NEW — scenario names already generated
+) -> str:
+
+    is_trade_finance = str(department_id or "").strip() == TRADE_FINANCE_DEPT_ID
+
+    # ── Output schema block ───────────────────────────────────────────────────
+    if is_trade_finance:
+        schema_block = f"""<output_schema>
+Each object MUST have ALL these fields exactly:
+{{
+  "Sr.No"                   : "Sequential number starting from 1",
+  "Function ID"             : "Top-level function code e.g. TF_TRANSFER_01",
+  "Function Description"    : "One-line description of the top-level function",
+  "Sub Function ID"         : "Sub-function code e.g. TF_TRANSFER_01_SF01",
+  "Sub Function Description": "Specific feature, field, or operation being tested",
+  "Pre-Condition"           : "System state and data required before test runs",
+  "Test Case ID"            : "TC_P{page_number}_001",
+  "Test Case Description"   : "Full description: what is tested, components involved, verification objective",
+  "Expected Result"         : "Exact system behaviour, message, data state after the action",
+  "Priority"                : "High | Medium | Low",
+  "Positive / Negative"     : "Positive | Negative | Exceptional",
+  "Status"                  : "",
+  "Remarks"                 : "",
+  "Document Name"           : "{document_name}",
+  "Page No"                 : "{page_number}"
+}}
+Status and Remarks: always leave empty — filled by tester after execution.
+</output_schema>"""
+    else:
+        schema_block = f"""<output_schema>
+Each object MUST have ALL these fields exactly:
+{{
+  "Test Case ID"   : "TC_P{page_number}_001",
+  "Test Case Name" : "Verify [specific thing] [under specific condition]",
+  "Scenario Name"  : "Module - Feature Name",
+  "Type"           : "Positive | Negative | Exceptional",
+  "Description"    : "What is being tested and why — one clear sentence",
+  "Steps"          : "1. Step one\\n2. Step two\\n3. Step three"\\n4 Step four and so on till all steps are covered,
+  "Test Data"      : "Specific realistic values — never placeholders",
+  "Expected Result": "Precise measurable outcome with exact messages or codes",
+  "Document Name"  : "{document_name}",
+  "Page No"        : "{page_number}"
+}}
+If a field has no applicable value write N/A — never leave it empty.
+</output_schema>"""
+
+    # ── Structure-driven coverage instructions (KEY IMPROVEMENT) ──────────────
+    structure_block = ""
+    if page_metadata:
+        st = page_metadata.get("section_type", "general_description")
+
+        # Each section type gets SPECIFIC generation instructions, not just a label
+        STRUCTURE_INSTRUCTIONS = {
+            "field_specification_table": (
+                "This page contains a FIELD SPECIFICATION TABLE.\n"
+                "For EACH field row in the table, generate SEPARATE test cases:\n"
+                "  • ONE positive: valid value at exact specified length/format\n"
+                "  • ONE negative: value exceeding max length\n"
+                "  • ONE negative: wrong data type (e.g. alpha in numeric field)\n"
+                "  • ONE negative: empty/null if field is MANDATORY\n"
+                "Do NOT combine multiple fields into one test case.\n"
+                "Do NOT generate high-level workflow tests on this page."
+            ),
+            "transaction_specification": (
+                "This page defines TRANSACTION CODES.\n"
+                "For EACH transaction code, generate SEPARATE test cases — never combine two codes.\n"
+                "Cover per code: valid execution, invalid parameters, boundary amounts,\n"
+                "status transitions, and any home/non-home branch differences.\n"
+                "Use exact transaction code numbers in every test case name."
+            ),
+            "screen_and_transaction_spec": (
+                "This page contains SCREEN + TRANSACTION specifications.\n"
+                "Generate test cases for each transaction code AND each screen element separately.\n"
+                "Navigation between screens = ONE complete test case (not split).\n"
+                "Field validation on screen = ONE test case per field per validation type."
+            ),
+            "screen_specification": (
+                "This page describes a SCREEN or FORM.\n"
+                "Test each UI element separately: each field, each button, each navigation link.\n"
+                "Navigation test = ONE complete test case covering source screen → action → destination.\n"
+                "Field test = ONE test case per validation type (length, format, mandatory)."
+            ),
+            "workflow_or_process_flow": (
+                "This page describes a PROCESS FLOW or WORKFLOW.\n"
+                "Generate test cases that cover:\n"
+                "  • Happy path end-to-end (one test)\n"
+                "  • Each decision branch/condition separately\n"
+                "  • Failure at each step where the document implies it\n"
+                "Maintain the documented sequence in test case steps.\n"
+                "Number your steps to match the flow numbering in the document."
+            ),
+            "error_codes_and_messages": (
+                "This page lists ERROR CODES and MESSAGES.\n"
+                "For EACH error code, generate exactly ONE negative test case that triggers it.\n"
+                "ALWAYS include the exact error message text (copied from document) in Expected Result.\n"
+                "Do NOT paraphrase error messages — copy them verbatim."
+            ),
+            "field_validation_rules": (
+                "This page defines FIELD VALIDATION RULES.\n"
+                "One test case per rule per field:\n"
+                "  • Length: test at exact limit, one below, one above\n"
+                "  • Format: valid format test + invalid format test\n"
+                "  • Mandatory: test empty/null submission\n"
+                "  • Data type: test with correct type + wrong type"
+            ),
+            "status_or_mode_values": (
+                "This page defines STATUS or MODE values.\n"
+                "Generate ONE test case per status/mode combination:\n"
+                "  • What operations are PERMITTED in this status/mode\n"
+                "  • What operations are BLOCKED in this status/mode\n"
+                "  • Status transition: verify correct next-state after operation"
+            ),
+            "tabular_data": (
+                "This page contains TABULAR DATA.\n"
+                "Test each row as a separate scenario.\n"
+                "Test boundary values at column min/max where numeric ranges are specified.\n"
+                "Test each combination of values that represents a distinct business rule."
+            ),
+            "general_description": (
+                "This page contains GENERAL REQUIREMENTS.\n"
+                "Extract every testable statement — each field, rule, constraint, and condition.\n"
+                "Cover positive (valid/success), negative (invalid/error), and exceptional (boundary) scenarios.\n"
+                "Follow the order requirements appear in the document."
+            ),
+        }
+
+        instr = STRUCTURE_INSTRUCTIONS.get(st, STRUCTURE_INSTRUCTIONS["general_description"])
+        hints = [instr]
+
+        tx = page_metadata.get("transaction_codes", [])
+        if tx:
+            hints.append(
+                f"Transaction codes on this page: {', '.join(tx)}\n"
+                f"Generate SEPARATE positive + negative + exceptional tests for EACH code above."
+            )
+
+        sc = page_metadata.get("screen_numbers", [])
+        if sc:
+            hints.append(
+                f"Screen numbers on this page: {', '.join(sc)}\n"
+                f"Reference these exact screen numbers in test case steps and names."
+            )
+
+        coverage = []
+        if page_metadata.get("has_field_list"):    coverage.append("field validations (length / type / mandatory) — ONE test per field per rule")
+        if page_metadata.get("has_error_codes"):   coverage.append("error codes — ONE negative test per code with exact message in Expected Result")
+        if page_metadata.get("has_workflow"):      coverage.append("workflow steps — follow exact sequence, test each decision branch")
+        if page_metadata.get("has_validation"):    coverage.append("boundary values — min, max, min-1, max+1 for every numeric/date field")
+        if page_metadata.get("has_status_values"): coverage.append("status values — ONE test per status transition")
+        if page_metadata.get("has_mode_values"):   coverage.append("mode values — ONE test per mode (CASH / CLRG / RTGS / NEFT / IMPS etc.)")
+        if coverage:
+            hints.append("MANDATORY coverage for this page type:\n" + "\n".join(f"  • {c}" for c in coverage))
+
+        structure_block = "<page_structure>\n" + "\n\n".join(hints) + "\n</page_structure>"
+
+    # ── RAG context block (instructional, not generic) ─────────────────────────
+    rag_block = ""
+    if rag_context.strip():
+        rag_block = (
+            "<rag_context>\n"
+            "Domain knowledge from the knowledge base — REFERENCE ONLY.\n\n"
+            "USE this context ONLY to:\n"
+            "  1. Fill in realistic test data values (account numbers, transaction codes, error messages)\n"
+            "  2. Understand how similar fields are validated in SBI systems\n"
+            "  3. Complete a requirement that appears cut mid-sentence on this page\n\n"
+            "DO NOT generate test cases from this context.\n"
+            "DO NOT reference fields, screens, or transactions that appear ONLY here and NOT in page_content.\n\n"
+            f"{rag_context}\n"
+            "</rag_context>"
+        )
+
+    # ── Context window block (prev/next page — read-only) ─────────────────────
+    context_window_block = ""
+    if context_window and context_window.strip():
+        context_window_block = (
+            "<context_window>\n"
+            "READING CONTEXT ONLY \n"
+            "This shows the tail of the previous page and head of the next page.\n"
+            "Use it ONLY to understand continuations or to complete a sentence/table\n"
+            "that starts or ends outside the page_content boundary.\n\n"
+            f"{context_window}\n"
+            "</context_window>"
+        )
+
+    # ── Already-covered scenarios block (prevents cross-page duplicates) ──────
+    coverage_block = ""
+    if already_covered:
+        # Send last 25 scenario names to keep the block compact
+        recent = already_covered[-25:]
+        coverage_block = (
+            "<already_generated>\n"
+            "The following scenario areas were already covered in PREVIOUS pages.\n"
+            "DO NOT generate new test cases for these scenarios — they are done.\n"
+            "You MAY generate test cases for NEW aspects not listed below.\n\n"
+            + "\n".join(f"  - {s}" for s in recent)
+            + "\n</already_generated>"
+        )
+
+    # ── Department context block ──────────────────────────────────────────────
+    dept_block = ""
+    if selected_department_description:
+        dept_block = (
+            "<department_context>\n"
+            f"{selected_department_description}\n"
+            "</department_context>"
+        )
+
+    # ── Additional user instructions ──────────────────────────────────────────
+    extra_block = ""
+    if user_prompt:
+        extra_block = (
+            "<additional_instructions>\n"
+            f"{user_prompt}\n"
+            "</additional_instructions>"
+        )
+
+    # Detect if this is an RTM call by checking if page_text starts with the RTM header
+    is_rtm_call = page_text.startswith("## SELECTED REQUIREMENTS FOR THIS PAGE")
+
+    rtm_instruction = ""
+    if is_rtm_call:
+        rtm_instruction = (
+            "\n<rtm_instruction>\n"
+            "This is an RTM (Requirements Traceability Matrix) generation call.\n"
+            "The SELECTED REQUIREMENTS section lists the ONLY requirements you must generate test cases for.\n"
+            "Do NOT generate test cases for anything outside those listed requirements.\n"
+            "Each generated test case must be traceable to one of the listed requirement IDs.\n"
+            "Use the FULL PAGE CONTENT section for exact field specs, values, and table data.\n"
+            "</rtm_instruction>"
+        )
+
+    return f"""<task>
+Generate comprehensive {testcase_type} test cases for the page content below.
+Document: {document_name}
+Page: {page_number}
+</task>
+{rtm_instruction}
+
+{structure_block}
+
+{dept_block}
+
+{rag_block}
+
+{context_window_block}
+
+{coverage_block}
+
+{extra_block}
+
+<page_content>
+IMPORTANT: Generate test cases ONLY from content inside this tag.
+Do NOT generate test cases from rag_context, context_window, or already_generated sections.
+{page_text}
+</page_content>
+
+<hard_rules>
+1. {"Generate test cases ONLY for the requirements listed in the SELECTED REQUIREMENTS section. Each test case must trace to one of those requirement IDs." if is_rtm_call else "Generate test cases ONLY for functional requirements explicitly present in page_content."}
+2. Do NOT invent fields, transactions, screens, or validations not shown in page_content.
+3. Return empty array [] if page_content contains ONLY:
+   - Document metadata (version, author, dates)
+   - Confidentiality notices or legal disclaimers
+   - Table of contents or section headings only
+   - Sign-off tables, revision history, change control tables
+   - About this Document / Purpose / Intended Audience sections
+   - List of abbreviations, cover pages, logos, watermarks
+4. RAG context is reference only — never the primary source.
+5. Context window is reading context only — never generate test cases from it.
+6. Every output schema field must be populated — write N/A if not applicable.
+7. No duplicate test cases — each must test a unique aspect.
+8. Generate all possible testcases for below points if information available in page_content : 
+- Impact/Dependencies on Other Functionality/ known gaps for Which Application is getting impacted (Impact (Y/N) due to this change request. Please generate testcases carefully for impacted modules/ applications.  \n"
+- Business acceptance scenarios, Business Rules , Expected Functionality or Scope of Change, Effort Estimations,Proposed Solution,Switch Side Changes (Credit Leg), Switch Side Changes (Debit Leg)  \n"
+- Solution Details like where changes needs to be implemented and how\n"
+- Whether Changes in Parameters Table required or not so that we can understand Interface or Integration Issues due to Parameter Changes, Objective of the CR, Name of the CR, About the Demand, Out of Scope , Scope, Benefits / Influence / Impact, New Functionality  
+- Existing Functionality with Process Flow , Technical Feasibility of the Proposed Solution, any Assumptions, Limitations, User Type or Capability Specifications, Maker Checker Specifications, Data Migration Applicability, Implementation Plan, Archival policy for new tables.
+- Configurations , AS-IS Process / Existing Process, Wireframes / proposed screens ,To-Be Process / Proposed process / solution  only , Key Benefits , User roles ,Common Fields, specific fields, additional fields,Settlement, generic flow, accounting, Entry ,Debit,Credit,Actual Funds Transfer, Nature, When these happened
+- Changes, additional changes , frontend alerts, error codes, implementation plan, Digital Signature and Encryption ,Technical Specifications,Programs Affected , Payment advice,Charge Recovery,
+- Generate seperate testcases per each functionality
+9. ORDERING RULE — CRITICAL: Order test cases by FUNCTIONAL FLOW, not by test type.
+   Correct order: [Login-Positive, Login-Negative, Login-Exceptional, Dashboard-Positive, Dashboard-Negative...]
+   Wrong order:   [Login-Positive, Dashboard-Positive, Transfer-Positive, Login-Negative, Dashboard-Negative...]
+   Follow the sequence in which features appear in the document, top to bottom.
+   Within each feature: Positive first, then Negative, then Exceptional.
+10. Test Case ID MUST follow format TC_P{page_number}_NNN exactly.
+    Example for page 5: TC_P5_001, TC_P5_002, TC_P5_003
+    NEVER use TC_001 format — the page number prefix is mandatory for flow ordering.
+
+    {schema_block}
+
+Return ONLY a valid JSON array starting with [ and ending with ]. No markdown, no explanation."""
